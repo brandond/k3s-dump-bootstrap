@@ -11,8 +11,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 
 	"github.com/brandond/k3s-dump-bootstrap/pkg/bootstrap"
@@ -53,7 +55,9 @@ func decryptBootstrap(ctx context.Context, args []string) error {
 	}
 
 	for pathKey, fileData := range files {
-		fmt.Printf("# %s: %v\n", pathKey, fileData.Timestamp)
+		digest := sha256.Sum256(fileData.Content)
+		hexDigest := hex.EncodeToString(digest[:])
+		fmt.Printf("\n\n%s\t%s\t%v\n", hexDigest, pathKey, fileData.Timestamp)
 		binary.Write(os.Stdout, binary.LittleEndian, fileData.Content)
 	}
 
