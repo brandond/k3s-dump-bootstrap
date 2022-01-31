@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,8 @@ import (
 
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
+	cryptorand "crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
@@ -25,16 +28,59 @@ import (
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := decryptBootstrap(ctx, os.Args); err != nil {
-		fmt.Printf("Error: %v\n", err)
+
+	decrypt := flag.Bool("decrypt", false, "decrypt bootstrap")
+	encrypt := flag.Bool("encrypt", false, "encrypt bootstrap")
+
+	flag.Parse()
+
+	if *decrypt {
+		if err := decryptBootstrap(ctx, os.Args); err != nil {
+			fmt.Printf("Error: %v\n", err)
+		}
+	}
+
+	if *encrypt {
+		if err := encryptBootstrap(ctx, os.Args); err != nil {
+			fmt.Printf("Error: %v\n", err)
+		}
 	}
 }
 
-func decryptBootstrap(ctx context.Context, args []string) error {
-	if len(args) != 2 {
+func Random(size int) (string, error) {
+	token := make([]byte, size, size)
+	_, err := cryptorand.Read(token)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token), err
+}
+
+func encryptBootstrap(ctx context.Context, args []string) error {
+	if len(args) != 3 {
 		return errors.New("exactly one argument required: <token>")
 	}
-	token := args[1]
+	token := args[2]
+
+	ciphertext, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return errors.Wrap(err, "failed to read ciphertext")
+	}
+
+	rawData, err := encrypt(token, ciphertext)
+	if err != nil {
+		return errors.Wrap(err, "failed to encrypt ciphertext")
+	}
+	fmt.Printf("%s",rawData)
+
+	return nil
+}
+
+func decryptBootstrap(ctx context.Context, args []string) error {
+	if len(args) != 3 {
+		return errors.New("exactly one argument required: <token>")
+	}
+	token := args[2]
 
 	ciphertext, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -45,6 +91,15 @@ func decryptBootstrap(ctx context.Context, args []string) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to decrypt ciphertext")
 	}
+
+
+	// rawDump := []byte(rawData)
+	err = os.WriteFile("rawdata.dump", rawData, 0600)
+	if err != nil {
+		return errors.Wrap(err, "failed to write rawdata")
+	}
+
+	// fmt.Printf("Rawdata:%s\n", rawData)
 
 	buf := bytes.NewReader(rawData)
 	files := make(bootstrap.PathsDataformat)
@@ -87,6 +142,33 @@ func decrypt(passphrase string, ciphertext []byte) ([]byte, error) {
 	}
 
 	return gcm.Open(nil, data[:gcm.NonceSize()], data[gcm.NonceSize():], nil)
+}
+
+func encrypt(passphrase string, plaintext []byte) ([]byte, error) {
+	salt, err := Random(8)
+	if err != nil {
+		return nil, err
+	}
+
+	clearKey := pbkdf2.Key([]byte(passphrase), []byte(salt), 4096, 32, sha1.New)
+	key, err := aes.NewCipher(clearKey)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(key)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	_, err = io.ReadFull(rand.Reader, nonce)
+	if err != nil {
+		return nil, err
+	}
+
+	sealed := gcm.Seal(nonce, nonce, plaintext, nil)
+	return []byte(salt + ":" + base64.StdEncoding.EncodeToString(sealed)), nil
 }
 
 func isMigrated(buf io.ReadSeeker, files *bootstrap.PathsDataformat) bool {
